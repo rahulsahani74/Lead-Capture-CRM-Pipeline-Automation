@@ -1,0 +1,948 @@
+{
+  "name": "Lead Capture & CRM Sync",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-capture",
+        "authentication": "none",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "8b85c5d7-ee72-4a3a-a39c-011b7543eef4",
+      "name": "Lead Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "f9847fe5-f42c-4cc8-a1c4-0ec35bf43f65",
+      "notes": "Authentication is 'none' for local testing. For production switch to Header Auth (create an 'HTTP Header Auth' credential) - see SETUP_GUIDE.md."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "1b46d49a-907d-493a-8943-de45d7fcb3b7",
+              "name": "spreadsheetId",
+              "value": "YOUR_SPREADSHEET_ID",
+              "type": "string"
+            },
+            {
+              "id": "8e826fad-177a-4f95-b9cb-32c859098883",
+              "name": "sheetName",
+              "value": "Leads",
+              "type": "string"
+            },
+            {
+              "id": "3d1d02ee-b0a1-490a-89fb-85dd496f860e",
+              "name": "telegramChatId",
+              "value": "YOUR_TELEGRAM_CHAT_ID",
+              "type": "string"
+            },
+            {
+              "id": "e6e75ce1-6b4f-46d6-a305-fc77f312d630",
+              "name": "adminChatId",
+              "value": "YOUR_ADMIN_TELEGRAM_CHAT_ID",
+              "type": "string"
+            },
+            {
+              "id": "f72451ad-cb40-40bb-9c06-34b87f15b20d",
+              "name": "followUpHours",
+              "value": 24,
+              "type": "number"
+            },
+            {
+              "id": "ff6ec6bd-9cb1-4368-9aaa-a1ecdbd3f138",
+              "name": "corsAllowOrigin",
+              "value": "*",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "1b671efd-9073-4188-9b18-bc9f89e62330",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        300
+      ],
+      "notes": "EDIT THIS NODE after import: spreadsheetId, telegramChatId, adminChatId. All other nodes read these values.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst toIST = (d) => new Date(d.getTime() + 330 * 60000).toISOString().replace(/\\.\\d{3}Z$/, '+05:30');\n\nconst LIMITS = { name: 120, email: 254, phone: 32, company: 160, requirement: 2000, source: 80 };\nconst KNOWN = ['name', 'email', 'phone', 'company', 'requirement', 'source'];\n\nlet body = $input.item.json.body;\nif (typeof body === 'string') {\n  try { body = JSON.parse(body); } catch (e) { body = null; }\n}\nif (!body || typeof body !== 'object' || Array.isArray(body)) {\n  return { json: { valid: false, errors: ['Request body must be a JSON object'] } };\n}\n\nconst errors = [];\nconst clean = (field, v, guardFormula) => {\n  if (v === undefined || v === null) return '';\n  if (typeof v === 'object') { errors.push(`${field} must be a string`); return ''; }\n  let s = String(v).replace(/[\\u0000-\\u001F\\u007F]/g, ' ').replace(/\\s+/g, ' ').trim();\n  if (s.length > LIMITS[field]) { errors.push(`${field} is too long (max ${LIMITS[field]} characters)`); return ''; }\n  if (guardFormula && /^[=+\\-@]/.test(s)) s = \"'\" + s;\n  return s;\n};\n\nconst name = clean('name', body.name, true);\nconst email = clean('email', body.email, false).toLowerCase();\nconst phoneRaw = clean('phone', body.phone, false);\nconst company = clean('company', body.company, true);\nconst requirement = clean('requirement', body.requirement, true);\nconst source = clean('source', body.source, true) || 'Unknown';\n\nif (!name) errors.push('name is required');\nif (!email && !phoneRaw) errors.push('Provide at least one of email or phone');\nif (email && !(/^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$/.test(email) && !email.includes('..'))) errors.push('email format is invalid');\n\n// Phone: keep a leading + (or convert a leading 00 to +). Never assume a country code.\nlet phone = '';\nlet phoneKey = '';\nif (phoneRaw) {\n  let digits = phoneRaw.replace(/\\D/g, '');\n  let plus = phoneRaw.startsWith('+');\n  if (!plus && digits.startsWith('00')) { plus = true; digits = digits.slice(2); }\n  if (digits.length < 7 || digits.length > 15 || /[^0-9+\\-\\s().]/.test(phoneRaw)) {\n    errors.push('phone must contain 7-15 digits');\n  } else {\n    phone = (plus ? '+' : '') + digits;\n    phoneKey = digits;\n  }\n}\n\n// Keep extra scalar fields instead of silently dropping them (max 10 keys)\nconst extra = {};\nlet n = 0;\nfor (const k of Object.keys(body)) {\n  if (KNOWN.includes(k) || n >= 10) continue;\n  const v = body[k];\n  if (v === null || typeof v === 'object') continue;\n  const key = String(k).replace(/[^\\w.-]/g, '').slice(0, 40);\n  const val = String(v).replace(/[\\u0000-\\u001F\\u007F]/g, ' ').trim().slice(0, 200);\n  if (key && val) { extra[key] = val; n++; }\n}\n\nif (errors.length) return { json: { valid: false, errors } };\n\nreturn { json: { valid: true, errors: [], receivedAt: toIST(new Date()),\n  lead: { name, email, phone, phoneKey, company, requirement, source, extra } } };\n"
+      },
+      "id": "158c5f2a-f9fa-4e2d-b600-0cfe59458144",
+      "name": "Validate & Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "de8f94f8-5226-4a89-90d2-4e57bcd0686a",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "109e0f88-011c-491f-94c9-41f0b65243b4",
+      "name": "Is Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, message: 'Invalid submission', errors: $('Validate & Normalize').first().json.errors }) }}",
+        "options": {
+          "responseCode": 400,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "={{ $('Config').first().json.corsAllowOrigin }}"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      },
+      "id": "a8226b8f-63e5-409c-8c1c-83936619711d",
+      "name": "Respond 400 Invalid",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        880,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Config').first().json.spreadsheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Config').first().json.sheetName }}"
+        },
+        "filtersUI": {},
+        "options": {}
+      },
+      "id": "581fc07d-0077-4726-9ac8-82649d5210e2",
+      "name": "Read Leads",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        880,
+        240
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst toIST = (d) => new Date(d.getTime() + 330 * 60000).toISOString().replace(/\\.\\d{3}Z$/, '+05:30');\n\nconst cfg = $('Config').first().json;\nconst lead = $('Validate & Normalize').first().json.lead;\nconst now = new Date();\nconst nowIST = toIST(now);\nconst followUpHours = Number(cfg.followUpHours) > 0 ? Number(cfg.followUpHours) : 24;\n\nconst rows = $input.all().map(i => i.json).filter(r => r && r.row_number !== undefined && (r['Lead ID'] || r['Email'] || r['Phone']));\nconst normEmail = s => String(s || '').trim().toLowerCase();\nconst phoneKeyOf = s => String(s || '').replace(/\\D/g, '');\n\nlet match = null, matchType = 'none', ambiguous = false;\nif (lead.email) {\n  const byEmail = rows.filter(r => normEmail(r['Email']) === lead.email);\n  if (byEmail.length) { match = byEmail[0]; matchType = 'email'; }\n  else if (lead.phoneKey) {\n    // Same phone on a row that has NO email: unambiguous enrichment only\n    const p = rows.filter(r => !normEmail(r['Email']) && phoneKeyOf(r['Phone']) === lead.phoneKey);\n    if (p.length === 1) { match = p[0]; matchType = 'phone-enrich'; }\n    else if (p.length > 1) ambiguous = true;\n  }\n} else if (lead.phoneKey) {\n  const p = rows.filter(r => phoneKeyOf(r['Phone']) === lead.phoneKey);\n  if (p.length === 1) { match = p[0]; matchType = 'phone'; }\n  else if (p.length > 1) ambiguous = true;\n}\n\nconst extraText = Object.keys(lead.extra || {}).length\n  ? 'Extra: ' + Object.entries(lead.extra).map(([k, v]) => `${k}=${v}`).join('; ') : '';\nconst field = (label, v) => `${label}: ${v || '-'}`;\n\nif (match) {\n  if (typeof match.row_number !== 'number' && !/^\\d+$/.test(String(match.row_number))) {\n    throw new Error('Google Sheets read did not return a usable row_number');\n  }\n  const oldNotes = String(match['Notes'] || '');\n  const note = `[${nowIST}] Repeat inquiry via ${lead.source}` + (lead.requirement ? `: ${lead.requirement}` : '') + (extraText ? ` (${extraText})` : '');\n  const notes = (oldNotes ? oldNotes + '\\n' : '') + note;\n  const update = {\n    row_number: Number(match.row_number),\n    'Name': match['Name'] || lead.name,\n    'Email': match['Email'] || lead.email,\n    'Phone': match['Phone'] || lead.phone,\n    'Company': match['Company'] || lead.company,\n    'Requirement': match['Requirement'] || lead.requirement,\n    'Notes': notes.slice(-5000)\n  };\n  const status = match['Status'] || 'New';\n  return [{ json: { action: 'updated', matchType, leadId: match['Lead ID'] || '', update,\n    duplicateMessage: ['♻️ Repeat inquiry (existing lead updated)', field('Name', update['Name']), field('Email', update['Email']),\n      field('Phone', update['Phone']), field('Source (this time)', lead.source), field('Requirement', lead.requirement),\n      field('Current status', status), 'Status was NOT reset.'].join('\\n') } }];\n}\n\n// New lead\nconst existingIds = new Set(rows.map(r => String(r['Lead ID'] || '')));\nlet leadId;\ndo {\n  leadId = 'LD-' + nowIST.slice(0, 10).replace(/-/g, '') + '-' + Math.random().toString(36).slice(2, 8).toUpperCase();\n} while (existingIds.has(leadId));\n\nconst notesParts = [];\nif (ambiguous) notesParts.push('Review: phone matches more than one existing row; created as a new lead.');\nif (extraText) notesParts.push(extraText);\n\nconst row = {\n  'Lead ID': leadId, 'Name': lead.name, 'Email': lead.email, 'Phone': lead.phone, 'Company': lead.company,\n  'Requirement': lead.requirement, 'Source': lead.source, 'Status': 'New', 'Assigned To': '',\n  'Created At': nowIST, 'Follow-up At': toIST(new Date(now.getTime() + followUpHours * 3600000)),\n  'Last Contacted': '', 'Notes': notesParts.join('\\n'), 'Follow-up Reminder Sent': ''\n};\nreturn [{ json: { action: 'created', matchType, leadId, row,\n  newLeadMessage: ['🔔 New lead', field('Name', row['Name']), field('Email', row['Email']), field('Phone', row['Phone']),\n    field('Company', row['Company']), field('Source', row['Source']), field('Requirement', row['Requirement']),\n    field('Status', row['Status']), field('Lead ID', leadId), 'Follow up by: ' + row['Follow-up At'],\n    'Reminder: contact this lead soon and update Status in the Leads sheet.'].join('\\n') } }];\n"
+      },
+      "id": "86d13c2a-1ebf-4a18-a3a4-137f0fbe6f5d",
+      "name": "Match & Decide",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5be6074f-e6a3-474b-a727-ab217dd30d36",
+              "leftValue": "={{ $json.action === 'created' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "9efbdd14-d10b-42ff-981d-bca5fe912fa8",
+      "name": "Is New Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Config').first().json.spreadsheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Config').first().json.sheetName }}"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Lead ID": "={{ $json.row['Lead ID'] }}",
+            "Name": "={{ $json.row['Name'] }}",
+            "Email": "={{ $json.row['Email'] }}",
+            "Phone": "={{ $json.row['Phone'] }}",
+            "Company": "={{ $json.row['Company'] }}",
+            "Requirement": "={{ $json.row['Requirement'] }}",
+            "Source": "={{ $json.row['Source'] }}",
+            "Status": "={{ $json.row['Status'] }}",
+            "Assigned To": "={{ $json.row['Assigned To'] }}",
+            "Created At": "={{ $json.row['Created At'] }}",
+            "Follow-up At": "={{ $json.row['Follow-up At'] }}",
+            "Last Contacted": "={{ $json.row['Last Contacted'] }}",
+            "Notes": "={{ $json.row['Notes'] }}",
+            "Follow-up Reminder Sent": "={{ $json.row['Follow-up Reminder Sent'] }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Lead ID",
+              "displayName": "Lead ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Phone",
+              "displayName": "Phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Company",
+              "displayName": "Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Requirement",
+              "displayName": "Requirement",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Source",
+              "displayName": "Source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Assigned To",
+              "displayName": "Assigned To",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Created At",
+              "displayName": "Created At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Follow-up At",
+              "displayName": "Follow-up At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Last Contacted",
+              "displayName": "Last Contacted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Notes",
+              "displayName": "Notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Follow-up Reminder Sent",
+              "displayName": "Follow-up Reminder Sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ]
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "id": "4f870442-4f04-44f7-bafb-3e230d58ffca",
+      "name": "Append New Lead",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1540,
+        160
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Config').first().json.telegramChatId }}",
+        "text": "={{ $('Match & Decide').first().json.newLeadMessage }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "d5d51797-c69c-454e-8907-11cec8a24e92",
+      "name": "Notify New Lead",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1760,
+        160
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {},
+      "id": "467b4cf1-e223-452b-8281-216f11e69394",
+      "name": "Notification Failed (lead saved)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1980,
+        260
+      ],
+      "notes": "Telegram failed but the lead is already saved. Check the Telegram credential/chat ID."
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Config').first().json.spreadsheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Config').first().json.sheetName }}"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_number": "={{ $json.update.row_number }}",
+            "Name": "={{ $json.update['Name'] }}",
+            "Email": "={{ $json.update['Email'] }}",
+            "Phone": "={{ $json.update['Phone'] }}",
+            "Company": "={{ $json.update['Company'] }}",
+            "Requirement": "={{ $json.update['Requirement'] }}",
+            "Notes": "={{ $json.update['Notes'] }}"
+          },
+          "matchingColumns": [
+            "row_number"
+          ],
+          "schema": [
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": false
+            },
+            {
+              "id": "Lead ID",
+              "displayName": "Lead ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Phone",
+              "displayName": "Phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Company",
+              "displayName": "Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Requirement",
+              "displayName": "Requirement",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Source",
+              "displayName": "Source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Assigned To",
+              "displayName": "Assigned To",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Created At",
+              "displayName": "Created At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Follow-up At",
+              "displayName": "Follow-up At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Last Contacted",
+              "displayName": "Last Contacted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Notes",
+              "displayName": "Notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Follow-up Reminder Sent",
+              "displayName": "Follow-up Reminder Sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ]
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "id": "10235add-87fb-4cb4-b7db-be342aaae8da",
+      "name": "Update Existing Lead",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1540,
+        380
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Config').first().json.telegramChatId }}",
+        "text": "={{ $('Match & Decide').first().json.duplicateMessage }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "58420328-275f-4e0b-844e-c577258a5ff1",
+      "name": "Notify Repeat Inquiry (optional)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1760,
+        380
+      ],
+      "disabled": true,
+      "notes": "Disabled by default. Enable it if you want a message for repeat inquiries."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, message: 'Lead processed successfully', action: $('Match & Decide').first().json.action }) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "={{ $('Config').first().json.corsAllowOrigin }}"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      },
+      "id": "91fbfe6f-9816-418e-ad65-5d78f4ad5336",
+      "name": "Respond 200 Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        2200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Config').first().json.adminChatId }}",
+        "text": "={{ 'Lead capture: a Google Sheets step failed. A lead may NOT have been saved. Execution ID: ' + $execution.id }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "1cc41e67-247a-4d5f-9248-623004530ca1",
+      "name": "Alert Admin (Sheets Failure)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1540,
+        620
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, message: 'Unable to process your request right now. Please try again later.' }) }}",
+        "options": {
+          "responseCode": 500,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "={{ $('Config').first().json.corsAllowOrigin }}"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      },
+      "id": "442482f8-2a78-4890-b3c7-91d6543a20e0",
+      "name": "Respond 500 Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1760,
+        620
+      ]
+    }
+  ],
+  "connections": {
+    "Lead Webhook": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Validate & Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Normalize": {
+      "main": [
+        [
+          {
+            "node": "Is Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Valid?": {
+      "main": [
+        [
+          {
+            "node": "Read Leads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 400 Invalid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Leads": {
+      "main": [
+        [
+          {
+            "node": "Match & Decide",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Admin (Sheets Failure)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match & Decide": {
+      "main": [
+        [
+          {
+            "node": "Is New Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is New Lead?": {
+      "main": [
+        [
+          {
+            "node": "Append New Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Existing Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append New Lead": {
+      "main": [
+        [
+          {
+            "node": "Notify New Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Admin (Sheets Failure)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify New Lead": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notification Failed (lead saved)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notification Failed (lead saved)": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Existing Lead": {
+      "main": [
+        [
+          {
+            "node": "Notify Repeat Inquiry (optional)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Admin (Sheets Failure)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Repeat Inquiry (optional)": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Admin (Sheets Failure)": {
+      "main": [
+        [
+          {
+            "node": "Respond 500 Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "tags": [],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo Lead Form</title>
+<style>
+  :root { --bg:#f4f6fb; --card:#fff; --text:#1c2333; --muted:#5b6478; --accent:#2f5bea; --ok:#146c43; --okbg:#e6f4ec; --err:#a1260d; --errbg:#fdecea; --border:#d5dae6; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--text); line-height:1.5; }
+  main { max-width:560px; margin:0 auto; padding:24px 16px 48px; }
+  .card { background:var(--card); border-radius:14px; padding:24px; box-shadow:0 2px 14px rgba(20,30,60,.08); }
+  h1 { font-size:1.4rem; margin:0 0 4px; }
+  p.sub { margin:0 0 20px; color:var(--muted); }
+  label { display:block; font-weight:600; font-size:.9rem; margin:14px 0 4px; }
+  .req::after { content:" *"; color:var(--err); }
+  input, select, textarea { width:100%; padding:10px 12px; border:1px solid var(--border); border-radius:8px; font:inherit; background:#fff; color:var(--text); }
+  input:focus, select:focus, textarea:focus { outline:2px solid var(--accent); outline-offset:1px; }
+  textarea { min-height:90px; resize:vertical; }
+  .err-text { color:var(--err); font-size:.82rem; min-height:1.1em; margin-top:2px; }
+  button { margin-top:18px; width:100%; padding:12px; border:0; border-radius:8px; background:var(--accent); color:#fff; font:inherit; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.6; cursor:progress; }
+  #status { margin-top:16px; padding:12px 14px; border-radius:8px; display:none; }
+  #status.ok { display:block; background:var(--okbg); color:var(--ok); }
+  #status.error { display:block; background:var(--errbg); color:var(--err); }
+  #status ul { margin:6px 0 0 18px; padding:0; }
+  details { margin-top:22px; font-size:.88rem; color:var(--muted); }
+  details code { background:#eef1f8; padding:1px 5px; border-radius:4px; }
+  .hp { position:absolute; left:-9999px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <h1>Contact us</h1>
+    <p class="sub">Tell us what you need and we'll get back to you.</p>
+
+    <form id="leadForm" novalidate>
+      <label for="name" class="req">Name</label>
+      <input id="name" name="name" type="text" autocomplete="name" maxlength="120">
+      <div class="err-text" data-for="name"></div>
+
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" autocomplete="email" maxlength="254">
+      <div class="err-text" data-for="email"></div>
+
+      <label for="phone">Phone</label>
+      <input id="phone" name="phone" type="tel" autocomplete="tel" maxlength="32" placeholder="e.g. +91 98765 43210">
+      <div class="err-text" data-for="phone"></div>
+
+      <label for="company">Company</label>
+      <input id="company" name="company" type="text" autocomplete="organization" maxlength="160">
+
+      <label for="requirement">Requirement</label>
+      <textarea id="requirement" name="requirement" maxlength="2000" placeholder="What are you looking for?"></textarea>
+
+      <label for="source">Source</label>
+      <select id="source" name="source">
+        <option>Website</option>
+        <option>Google Ads</option>
+        <option>Referral</option>
+        <option>Social Media</option>
+        <option>Other</option>
+      </select>
+
+      <div class="err-text" data-for="contact">Name is required, plus at least one of email or phone.</div>
+      <button type="submit" id="submitBtn">Send</button>
+    </form>
+
+    <div id="status" role="status" aria-live="polite"></div>
+
+    <details>
+      <summary>Developer setup (remove this block in production)</summary>
+      <ol>
+        <li>Import and <strong>activate</strong> <code>01_lead_capture_crm.json</code> in n8n.</li>
+        <li>Open the Webhook node and copy the <strong>Production URL</strong> (or the <strong>Test URL</strong> while the workflow is open and listening).</li>
+        <li>Edit <code>WEBHOOK_URL</code> in the script at the bottom of this file.</li>
+        <li><code>http://localhost:5678/...</code> only works from this computer. Visitors on the internet cannot reach it; for real traffic you need a public HTTPS URL (reverse proxy, tunnel, or a hosted n8n). Never put API keys or secrets in this page; anything here is visible to every visitor.</li>
+      </ol>
+    </details>
+  </div>
+</main>
+
+<script>
+// ============================ CONFIGURE HERE ============================
+// Replace with your n8n webhook URL (Production URL after activating the workflow).
+const WEBHOOK_URL = "https://aai.app.n8n.cloud/webhook/lead-capture";
+// Test URL (workflow open + "Listen for test event"): http://localhost:5678/webhook-test/lead-capture
+
+// true  = send the JSON as Content-Type text/plain. This is a CORS "simple request": no preflight is needed,
+//         which matters when this file is opened from file:// or another origin than n8n. The workflow accepts
+//         both text/plain JSON and application/json.
+// false = send Content-Type application/json (use when the form is served from the same origin as n8n, or
+//         once you have confirmed your proxy/n8n answers CORS preflight requests).
+const USE_SIMPLE_CORS_REQUEST = true;
+// ========================================================================
+
+const form = document.getElementById("leadForm");
+const statusBox = document.getElementById("status");
+const btn = document.getElementById("submitBtn");
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+function setErr(key, msg) {
+  const el = document.querySelector('[data-for="' + key + '"]');
+  if (el) el.textContent = msg || "";
+}
+function showStatus(kind, text, list) {
+  statusBox.className = kind;
+  statusBox.textContent = text; // textContent: server text is never parsed as HTML
+  if (Array.isArray(list) && list.length) {
+    const ul = document.createElement("ul");
+    list.forEach(function (item) { const li = document.createElement("li"); li.textContent = String(item); ul.appendChild(li); });
+    statusBox.appendChild(ul);
+  }
+}
+
+function validate(data) {
+  let ok = true;
+  ["name", "email", "phone", "contact"].forEach(function (k) { setErr(k, ""); });
+  if (!data.name) { setErr("name", "Please enter your name."); ok = false; }
+  if (data.email && !EMAIL_RE.test(data.email)) { setErr("email", "Please enter a valid email address."); ok = false; }
+  if (data.phone) {
+    const digits = data.phone.replace(/\D/g, "");
+    if (digits.length < 7 || digits.length > 15 || /[^0-9+\-\s().]/.test(data.phone)) { setErr("phone", "Phone must contain 7-15 digits."); ok = false; }
+  }
+  if (!data.email && !data.phone) { setErr("contact", "Please provide an email address or a phone number."); ok = false; }
+  return ok;
+}
+
+form.addEventListener("submit", async function (ev) {
+  ev.preventDefault();
+  statusBox.className = ""; statusBox.textContent = "";
+  const data = {
+    name: form.name.value.trim(),
+    email: form.email.value.trim(),
+    phone: form.phone.value.trim(),
+    company: form.company.value.trim(),
+    requirement: form.requirement.value.trim(),
+    source: form.source.value
+  };
+  if (!validate(data)) return;
+
+  btn.disabled = true; btn.textContent = "Sending...";
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(function () { controller.abort(); }, 20000);
+    const res = await fetch(WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": USE_SIMPLE_CORS_REQUEST ? "text/plain;charset=UTF-8" : "application/json" },
+      body: JSON.stringify(data),
+      signal: controller.signal
+    });
+    clearTimeout(timer);
+    let payload = null;
+    try { payload = await res.json(); } catch (e) { /* non-JSON response */ }
+
+    if (res.ok && payload && payload.success === true) {
+      showStatus("ok", "Thank you! We have received your details.");
+      form.reset();
+    } else if (res.status === 400 && payload && Array.isArray(payload.errors)) {
+      showStatus("error", "Please fix the following:", payload.errors);
+    } else {
+      showStatus("error", "Sorry, we could not submit your details right now. Please try again later.");
+    }
+  } catch (err) {
+    showStatus("error", "Could not reach the server. Check the webhook URL, that the workflow is active, and CORS/network settings.");
+  } finally {
+    btn.disabled = false; btn.textContent = "Send";
+  }
+});
+</script>
+</body>
+</html>

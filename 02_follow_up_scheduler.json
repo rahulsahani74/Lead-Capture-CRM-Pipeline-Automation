@@ -1,0 +1,458 @@
+{
+  "name": "Follow-up Scheduler",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "c59b02c6-7a60-402f-add5-845ee491b2fb",
+      "name": "Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "4b42e1fd-63ea-4073-bb14-10f6fc6db72b",
+      "name": "Run Now (Manual Test)",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "183eb9f3-c729-44df-b451-0a49d3bf037b",
+              "name": "spreadsheetId",
+              "value": "YOUR_SPREADSHEET_ID",
+              "type": "string"
+            },
+            {
+              "id": "9658ab52-b17a-4e8f-83e6-47146af85881",
+              "name": "sheetName",
+              "value": "Leads",
+              "type": "string"
+            },
+            {
+              "id": "5029d51d-3820-47a2-a3a4-b00db5987e2c",
+              "name": "telegramChatId",
+              "value": "YOUR_TELEGRAM_CHAT_ID",
+              "type": "string"
+            },
+            {
+              "id": "338fd2c0-3a74-4633-ab54-892fc1d4fb4f",
+              "name": "adminChatId",
+              "value": "YOUR_ADMIN_TELEGRAM_CHAT_ID",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "80d08ae8-f64e-4250-a551-e9163b7adc8f",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        240,
+        300
+      ],
+      "notes": "EDIT THIS NODE after import (same values as workflow 1).",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Config').first().json.spreadsheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Config').first().json.sheetName }}"
+        },
+        "filtersUI": {},
+        "options": {}
+      },
+      "id": "750dca42-dab3-4332-b7ff-949c601e4566",
+      "name": "Read Leads",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        460,
+        300
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst toIST = (d) => new Date(d.getTime() + 330 * 60000).toISOString().replace(/\\.\\d{3}Z$/, '+05:30');\n\nconst MAX_PER_RUN = 15;               // Telegram group chats allow ~20 messages/minute\nconst ELIGIBLE_STATUSES = ['new'];    // add e.g. 'contacted' here if you want reminders for other statuses\nconst now = Date.now();\nconst stamp = toIST(new Date());\nconst stats = { read: 0, notDue: 0, alreadyReminded: 0, ineligibleStatus: 0, badDate: 0, noRowNumber: 0 };\nconst due = [];\n\nfor (const it of $input.all()) {\n  const r = it.json;\n  if (!r || !r['Lead ID']) continue;\n  stats.read++;\n  if (r.row_number === undefined || r.row_number === null || r.row_number === '') { stats.noRowNumber++; continue; }\n  if (!ELIGIBLE_STATUSES.includes(String(r['Status'] || '').trim().toLowerCase())) { stats.ineligibleStatus++; continue; }\n  if (String(r['Follow-up Reminder Sent'] || '').trim()) { stats.alreadyReminded++; continue; }\n  const raw = String(r['Follow-up At'] || '').trim();\n  const t = raw ? Date.parse(raw) : NaN;\n  if (isNaN(t)) { stats.badDate++; continue; }\n  if (t > now) { stats.notDue++; continue; }\n  due.push({ t, r });\n}\ndue.sort((a, b) => a.t - b.t);\n\nreturn due.slice(0, MAX_PER_RUN).map(({ r }) => ({ json: {\n  row_number: Number(r.row_number), leadId: r['Lead ID'], reminderStamp: stamp, stats,\n  message: ['⏰ Follow-up reminder', 'Name: ' + (r['Name'] || '-'), 'Email: ' + (r['Email'] || '-'), 'Phone: ' + (r['Phone'] || '-'),\n    'Company: ' + (r['Company'] || '-'), 'Source: ' + (r['Source'] || '-'), 'Requirement: ' + (r['Requirement'] || '-'),\n    'Assigned to: ' + (r['Assigned To'] || '-'), 'Follow-up was due: ' + (r['Follow-up At'] || '-'),\n    'Lead ID: ' + r['Lead ID'], 'Status is still New - please contact this lead.'].join('\\n') } }));\n"
+      },
+      "id": "9bc04f2c-825d-4d7d-a4f7-0e0c4e812035",
+      "name": "Filter Eligible Leads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Config').first().json.telegramChatId }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "6d090af7-7c42-48f4-9ec4-5d39c4b3f7c1",
+      "name": "Send Telegram Reminder",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        900,
+        300
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Config').first().json.spreadsheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Config').first().json.sheetName }}"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_number": "={{ $('Filter Eligible Leads').item.json.row_number }}",
+            "Follow-up Reminder Sent": "={{ $('Filter Eligible Leads').item.json.reminderStamp }}"
+          },
+          "matchingColumns": [
+            "row_number"
+          ],
+          "schema": [
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": false
+            },
+            {
+              "id": "Lead ID",
+              "displayName": "Lead ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Phone",
+              "displayName": "Phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Company",
+              "displayName": "Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Requirement",
+              "displayName": "Requirement",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Source",
+              "displayName": "Source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Assigned To",
+              "displayName": "Assigned To",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Created At",
+              "displayName": "Created At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Follow-up At",
+              "displayName": "Follow-up At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Last Contacted",
+              "displayName": "Last Contacted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Notes",
+              "displayName": "Notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Follow-up Reminder Sent",
+              "displayName": "Follow-up Reminder Sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ]
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "id": "65d869a7-9e84-4b8e-b293-4c38d720838a",
+      "name": "Update Reminder Fields",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1120,
+        260
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Config').first().json.adminChatId }}",
+        "text": "={{ 'Follow-up scheduler: a step failed (reading the sheet, sending a reminder, or marking it as sent). Execution ID: ' + $execution.id }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "fd0e8732-bf58-43dd-8c68-ea983899ae2a",
+      "name": "Alert Admin (Scheduler Failure)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1120,
+        480
+      ],
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Every Hour": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Now (Manual Test)": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Read Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Leads": {
+      "main": [
+        [
+          {
+            "node": "Filter Eligible Leads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Admin (Scheduler Failure)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Eligible Leads": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Telegram Reminder": {
+      "main": [
+        [
+          {
+            "node": "Update Reminder Fields",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Admin (Scheduler Failure)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Reminder Fields": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Alert Admin (Scheduler Failure)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "tags": [],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

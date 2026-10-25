@@ -1,0 +1,28 @@
+# Secrets and local config
+.env
+.env.*
+*.pem
+*.key
+credentials*.json
+*credentials*.json
+n8n-credentials-export*/
+
+# n8n local data (Docker volume mounts)
+.n8n/
+n8n_data/
+database.sqlite
+*.sqlite
+
+# Exports that may contain real IDs or data
+*_export_with_data*.json
+executions*.json
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.idea/
+node_modules/
+*.log
+*.zip

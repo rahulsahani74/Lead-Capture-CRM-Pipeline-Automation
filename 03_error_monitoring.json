@@ -1,0 +1,121 @@
+{
+  "name": "Error Monitoring",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "893213dc-ab01-4719-901a-634300c2ac8d",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "3b3809f6-5f72-4c7a-aed7-07f2d8139152",
+              "name": "adminChatId",
+              "value": "YOUR_ADMIN_TELEGRAM_CHAT_ID",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "d52fb18c-9792-4673-88c2-fee5a21e8565",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        200
+      ],
+      "notes": "EDIT THIS NODE after import.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst j = $input.first().json;\nconst redact = (s) => String(s || '')\n  .replace(/[\\w.+-]+@[\\w-]+\\.[\\w.-]+/g, '[email]')\n  .replace(/\\+?\\d[\\d\\s().-]{6,}\\d/g, '[number]')\n  .replace(/(bearer|token|key|secret|password)([\\s:=]+)\\S+/ig, '$1$2[redacted]')\n  .replace(/[A-Za-z0-9_\\-]{32,}/g, '[redacted]');\nconst exec = j.execution || {};\nconst wfl = j.workflow || {};\nconst msg = redact(exec.error && exec.error.message).slice(0, 300);\nconst lines = [\n  '⚠️ n8n workflow failed',\n  'Workflow: ' + (wfl.name || 'unknown'),\n  'Failed node: ' + (exec.lastNodeExecuted || 'unknown'),\n  'Mode: ' + (exec.mode || 'unknown'),\n  'Execution ID: ' + (exec.id || 'unknown'),\n  'Error: ' + (msg || 'no message'),\n];\nif (exec.url) lines.push('Open: ' + exec.url);\nreturn [{ json: { message: lines.join('\\n').slice(0, 3500) } }];\n"
+      },
+      "id": "ffca7bde-a2c8-4e76-b093-6aae3b8aa469",
+      "name": "Build Safe Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Config').first().json.adminChatId }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "f6e831d0-73cc-4458-8f1f-388f1fe59fc0",
+      "name": "Alert Admin",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        200
+      ]
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Build Safe Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Safe Message": {
+      "main": [
+        [
+          {
+            "node": "Alert Admin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "tags": [],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
